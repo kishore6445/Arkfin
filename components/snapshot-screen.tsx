@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { 
@@ -9,37 +9,191 @@ import {
 } from 'lucide-react';
 import { useAppState } from '@/context/app-state';
 import { calculateRunway, calculateHealthScore, calculateDSO } from '@/lib/calculations';
+import { getSupabaseClient } from '@/lib/supabase/client';
 
 interface SnapshotScreenProps {
   onNavigate?: (screen: string) => void;
 }
 
+type BankAccountApiRow = {
+  id: string;
+  account_name?: string | null;
+  balance?: number | null;
+};
+
+type TransactionApiRow = {
+  id: string;
+  date?: string | null;
+  amount?: number | null;
+  is_income?: boolean | null;
+  accounting_type?: string | null;
+  subtype?: string | null;
+  source_type?: string | null;
+};
+
+type PayrollRunApiRow = {
+  payroll_month?: string | null;
+  payroll_date?: string | null;
+  status?: string | null;
+  total_net?: number | null;
+};
+
+async function getAccessToken() {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.auth.getSession();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const accessToken = data.session?.access_token;
+  if (!accessToken) {
+    throw new Error('Missing session token. Please sign in again.');
+  }
+
+  return accessToken;
+}
+
 export function SnapshotScreen({ onNavigate }: SnapshotScreenProps) {
   const { state } = useAppState();
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [liveBankAccounts, setLiveBankAccounts] = useState<BankAccountApiRow[]>([]);
+  const [liveTransactions, setLiveTransactions] = useState<TransactionApiRow[]>([]);
+  const [livePayrollRuns, setLivePayrollRuns] = useState<PayrollRunApiRow[]>([]);
+  const [bankLoaded, setBankLoaded] = useState(false);
+  const [txLoaded, setTxLoaded] = useState(false);
+  const [payrollLoaded, setPayrollLoaded] = useState(false);
+
+  useEffect(() => {
+    const triggerRefresh = () => setRefreshKey((prev) => prev + 1);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        triggerRefresh();
+      }
+    };
+
+    window.addEventListener('finance:transactions-updated', triggerRefresh);
+    window.addEventListener('finance:bank-accounts-updated', triggerRefresh);
+    window.addEventListener('focus', triggerRefresh);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      window.removeEventListener('finance:transactions-updated', triggerRefresh);
+      window.removeEventListener('finance:bank-accounts-updated', triggerRefresh);
+      window.removeEventListener('focus', triggerRefresh);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadSnapshotData = async () => {
+      try {
+        const accessToken = await getAccessToken();
+        const headers: HeadersInit = {
+          Authorization: `Bearer ${accessToken}`,
+        };
+
+        const [bankRes, txRes, payrollRes] = await Promise.all([
+          fetch('/api/bank-accounts', { method: 'GET', cache: 'no-store', headers }),
+          fetch('/api/transactions', { method: 'GET', cache: 'no-store', headers }),
+          fetch('/api/payroll-runs', { method: 'GET', cache: 'no-store', headers }),
+        ]);
+
+        if (bankRes.ok) {
+          const bankPayload = await bankRes.json();
+          if (isMounted) {
+            setLiveBankAccounts((bankPayload.accounts ?? []) as BankAccountApiRow[]);
+            setBankLoaded(true);
+          }
+        }
+
+        if (txRes.ok) {
+          const txPayload = await txRes.json();
+          if (isMounted) {
+            setLiveTransactions((txPayload.transactions ?? []) as TransactionApiRow[]);
+            setTxLoaded(true);
+          }
+        }
+
+        if (payrollRes.ok) {
+          const payrollPayload = await payrollRes.json();
+          if (isMounted) {
+            setLivePayrollRuns((payrollPayload.runs ?? []) as PayrollRunApiRow[]);
+            setPayrollLoaded(true);
+          }
+        }
+      } catch {
+        // Keep existing/fallback app state metrics when live fetch fails.
+      }
+    };
+
+    void loadSnapshotData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [refreshKey]);
+
+  const effectiveBankAccounts = bankLoaded
+    ? liveBankAccounts.map((a) => ({
+        id: a.id,
+        accountName: a.account_name ?? 'Bank Account',
+        balance: Number(a.balance ?? 0),
+      }))
+    : state.bankAccounts;
+
+  const effectiveTransactions = txLoaded
+    ? liveTransactions.map((t) => ({
+        id: t.id,
+        date: t.date ?? '',
+        amount: Number(t.amount ?? 0),
+        isIncome: Boolean(t.is_income),
+        accountingType: (t.accounting_type ?? 'Expense') as 'Revenue' | 'Expense' | 'Asset' | 'Liability',
+        subtype: t.subtype ?? 'Other',
+        sourceType: t.source_type ?? null,
+      }))
+    : state.transactions.map((t) => ({
+        ...t,
+        sourceType: null as string | null,
+      }));
+
+  const committedPayrollRuns = payrollLoaded
+    ? livePayrollRuns.filter((run) => ['PROCESSED', 'APPROVED'].includes((run.status ?? '').toUpperCase()))
+    : [];
 
   // Calculate metrics from live app state
   const today = new Date().toISOString().split('T')[0];
   const todayDate = new Date();
   const currentMonthKey = today.slice(0, 7);
-  const todayTransactions = state.transactions.filter(t => t.date === today);
+  const todayTransactions = effectiveTransactions.filter((t) => t.date === today && t.sourceType !== 'payroll');
+  const todayPayrollOutflow = committedPayrollRuns
+    .filter((run) => (run.payroll_date ?? '').slice(0, 10) === today)
+    .reduce((sum, run) => sum + Number(run.total_net ?? 0), 0);
   const todayIncome = todayTransactions
     .filter(t => t.isIncome)
     .reduce((sum, t) => sum + t.amount, 0);
   const todayExpense = todayTransactions
     .filter(t => !t.isIncome)
-    .reduce((sum, t) => sum + t.amount, 0);
+    .reduce((sum, t) => sum + t.amount, 0) + todayPayrollOutflow;
   const todayNet = todayIncome - todayExpense;
 
-  const currentMonthTransactions = state.transactions.filter(t => (t.date ?? '').startsWith(currentMonthKey));
+  const currentMonthTransactions = effectiveTransactions.filter(
+    (t) => (t.date ?? '').startsWith(currentMonthKey) && t.sourceType !== 'payroll'
+  );
+  const currentMonthPayrollOutflow = committedPayrollRuns
+    .filter((run) => (run.payroll_month ?? '').slice(0, 7) === currentMonthKey)
+    .reduce((sum, run) => sum + Number(run.total_net ?? 0), 0);
   const monthlyRevenue = currentMonthTransactions
     .filter(t => t.isIncome)
     .reduce((sum, t) => sum + t.amount, 0);
   const monthlyBurn = currentMonthTransactions
     .filter(t => !t.isIncome)
-    .reduce((sum, t) => sum + t.amount, 0);
+    .reduce((sum, t) => sum + t.amount, 0) + currentMonthPayrollOutflow;
   const monthlyNetCashFlow = monthlyRevenue - monthlyBurn;
 
-  const cashBalance = state.bankAccounts.reduce((sum, account) => sum + Number(account.balance ?? 0), 0);
+  const cashBalance = effectiveBankAccounts.reduce((sum, account) => sum + Number(account.balance ?? 0), 0);
   const runway = calculateRunway(cashBalance, monthlyBurn);
   
   // Health thresholds
@@ -321,21 +475,21 @@ export function SnapshotScreen({ onNavigate }: SnapshotScreenProps) {
               <div className="flex items-start justify-between mb-4">
                 <div>
                   <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Bank Accounts</p>
-                  <p className="text-2xl font-bold text-slate-900">{state.bankAccounts.length}</p>
+                  <p className="text-2xl font-bold text-slate-900">{effectiveBankAccounts.length}</p>
                 </div>
                 <div className="p-3 bg-blue-50 rounded-lg">
                   <Landmark className="w-5 h-5 text-blue-600" />
                 </div>
               </div>
               <div className="border-t border-slate-200 pt-3 space-y-2">
-                {state.bankAccounts.slice(0, 2).map(acc => (
+                {effectiveBankAccounts.slice(0, 2).map(acc => (
                   <div key={acc.id} className="flex justify-between items-center text-sm">
                     <span className="text-slate-600">{acc.accountName}</span>
                     <span className="font-semibold text-slate-900">₹{(acc.balance / 100000).toFixed(1)}L</span>
                   </div>
                 ))}
-                {state.bankAccounts.length > 2 && (
-                  <p className="text-xs text-slate-500 pt-2">+{state.bankAccounts.length - 2} more accounts</p>
+                {effectiveBankAccounts.length > 2 && (
+                  <p className="text-xs text-slate-500 pt-2">+{effectiveBankAccounts.length - 2} more accounts</p>
                 )}
               </div>
               <Button 
@@ -363,7 +517,7 @@ export function SnapshotScreen({ onNavigate }: SnapshotScreenProps) {
                 <div className="space-y-1 text-sm">
                   {state.bankAccountMappings.slice(0, 2).map(mapping => {
                     const bucket = ['GST', 'Operating', 'Reserve', 'CapEx'][['gst', 'operating', 'reserve', 'capex'].indexOf(mapping.bucketId)] || mapping.bucketId;
-                    const account = state.bankAccounts.find(a => a.id === mapping.bankAccountId);
+                    const account = effectiveBankAccounts.find(a => a.id === mapping.bankAccountId);
                     return (
                       <p key={mapping.id} className="flex justify-between text-slate-600">
                         <span>{bucket}</span>

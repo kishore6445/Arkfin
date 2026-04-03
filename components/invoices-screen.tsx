@@ -229,6 +229,20 @@ export function InvoicesScreen({ onNavigate }: InvoicesScreenProps) {
     void fetchInvoices();
   }, [fetchInvoices]);
 
+  useEffect(() => {
+    const refreshInvoices = () => {
+      void fetchInvoices();
+    };
+
+    window.addEventListener('finance:transactions-updated', refreshInvoices);
+    window.addEventListener('focus', refreshInvoices);
+
+    return () => {
+      window.removeEventListener('finance:transactions-updated', refreshInvoices);
+      window.removeEventListener('focus', refreshInvoices);
+    };
+  }, [fetchInvoices]);
+
   const selectedInvoice = selectedInvoiceId
     ? invoices.find((inv) => inv.id === selectedInvoiceId)
     : null;

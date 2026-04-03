@@ -1141,15 +1141,50 @@ function calculateCashEffect(amount: unknown, isIncome: unknown) {
   async function updateInvoiceStatusIfPaid(
     admin: ReturnType<typeof getAdminClient>,
     organizationId: string,
-    invoiceId: string | null | undefined,
+    invoiceIdOrNumber: string | null | undefined,
     paymentStatus: string | undefined
   ) {
     // Only update invoice status if payment_status is being set to 'Paid' and invoice exists
-    if (!invoiceId || normalizeToken(paymentStatus) !== 'PAID') {
+    if (!invoiceIdOrNumber || normalizeToken(paymentStatus) !== 'PAID') {
       return
     }
 
     try {
+      const invoiceRef = String(invoiceIdOrNumber).trim()
+      if (!invoiceRef) {
+        return
+      }
+
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(invoiceRef)
+
+      let targetInvoiceId: string | null = null
+      if (isUuid) {
+        const { data } = await admin
+          .from('invoices')
+          .select('id')
+          .eq('organization_id', organizationId)
+          .eq('id', invoiceRef)
+          .maybeSingle<{ id: string }>()
+
+        targetInvoiceId = data?.id ?? null
+      }
+
+      if (!targetInvoiceId) {
+        const { data } = await admin
+          .from('invoices')
+          .select('id')
+          .eq('organization_id', organizationId)
+          .eq('invoice_no', invoiceRef)
+          .maybeSingle<{ id: string }>()
+
+        targetInvoiceId = data?.id ?? null
+      }
+
+      if (!targetInvoiceId) {
+        console.warn(`[Invoice Status Update] No invoice found for reference ${invoiceRef}`)
+        return
+      }
+
       // Update invoice status to 'Paid'
       const { error } = await admin
         .from('invoices')
@@ -1157,18 +1192,18 @@ function calculateCashEffect(amount: unknown, isIncome: unknown) {
           status: 'Paid',
           updated_at: new Date().toISOString(),
         })
-        .eq('id', invoiceId)
+          .eq('id', targetInvoiceId)
         .eq('organization_id', organizationId)
 
       if (error) {
         console.error(
-          `[Invoice Status Update] Failed to update invoice ${invoiceId} to Paid:`,
+            `[Invoice Status Update] Failed to update invoice ${invoiceRef} to Paid:`,
           error.message
         )
       }
     } catch (err) {
       console.error(
-        `[Invoice Status Update] Unexpected error updating invoice ${invoiceId}:`,
+        `[Invoice Status Update] Unexpected error updating invoice ${invoiceIdOrNumber}:`,
         err instanceof Error ? err.message : 'Unknown error'
       )
     }
