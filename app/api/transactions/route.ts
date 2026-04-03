@@ -1159,25 +1159,65 @@ function calculateCashEffect(amount: unknown, isIncome: unknown) {
 
       let targetInvoiceId: string | null = null
       if (isUuid) {
-        const { data } = await admin
-          .from('invoices')
-          .select('id')
-          .eq('organization_id', organizationId)
-          .eq('id', invoiceRef)
-          .maybeSingle<{ id: string }>()
+        const uuidQueries = [
+          admin
+            .from('invoices')
+            .select('id')
+            .eq('organization_id', organizationId)
+            .eq('id', invoiceRef)
+            .maybeSingle<{ id: string }>(),
+          admin
+            .from('invoices')
+            .select('id')
+            .eq('organizationid', organizationId)
+            .eq('id', invoiceRef)
+            .maybeSingle<{ id: string }>(),
+        ]
 
-        targetInvoiceId = data?.id ?? null
+        for (const query of uuidQueries) {
+          const { data } = await query
+          if (data?.id) {
+            targetInvoiceId = data.id
+            break
+          }
+        }
       }
 
       if (!targetInvoiceId) {
-        const { data } = await admin
-          .from('invoices')
-          .select('id')
-          .eq('organization_id', organizationId)
-          .eq('invoice_no', invoiceRef)
-          .maybeSingle<{ id: string }>()
+        const numberQueries = [
+          admin
+            .from('invoices')
+            .select('id')
+            .eq('organization_id', organizationId)
+            .eq('invoice_no', invoiceRef)
+            .maybeSingle<{ id: string }>(),
+          admin
+            .from('invoices')
+            .select('id')
+            .eq('organizationid', organizationId)
+            .eq('invoice_no', invoiceRef)
+            .maybeSingle<{ id: string }>(),
+          admin
+            .from('invoices')
+            .select('id')
+            .eq('organizationid', organizationId)
+            .eq('invoiceno', invoiceRef)
+            .maybeSingle<{ id: string }>(),
+          admin
+            .from('invoices')
+            .select('id')
+            .eq('organization_id', organizationId)
+            .eq('invoiceno', invoiceRef)
+            .maybeSingle<{ id: string }>(),
+        ]
 
-        targetInvoiceId = data?.id ?? null
+        for (const query of numberQueries) {
+          const { data } = await query
+          if (data?.id) {
+            targetInvoiceId = data.id
+            break
+          }
+        }
       }
 
       if (!targetInvoiceId) {
@@ -1185,21 +1225,82 @@ function calculateCashEffect(amount: unknown, isIncome: unknown) {
         return
       }
 
-      // Update invoice status to 'Paid'
-      const { error } = await admin
-        .from('invoices')
-        .update({
-          status: 'Paid',
-          updated_at: new Date().toISOString(),
-        })
+      let invoiceAmount = 0
+      const invoiceAmountQueries = [
+        admin
+          .from('invoices')
+          .select('invoice_amount')
           .eq('id', targetInvoiceId)
-        .eq('organization_id', organizationId)
+          .eq('organization_id', organizationId)
+          .maybeSingle<{ invoice_amount?: number | null }>(),
+        admin
+          .from('invoices')
+          .select('invoiceamount')
+          .eq('id', targetInvoiceId)
+          .eq('organizationid', organizationId)
+          .maybeSingle<{ invoiceamount?: number | null }>(),
+      ]
 
-      if (error) {
-        console.error(
-            `[Invoice Status Update] Failed to update invoice ${invoiceRef} to Paid:`,
-          error.message
-        )
+      for (const query of invoiceAmountQueries) {
+        const { data } = await query
+        const amount = Number((data as any)?.invoice_amount ?? (data as any)?.invoiceamount ?? 0)
+        if (amount > 0) {
+          invoiceAmount = amount
+          break
+        }
+      }
+
+      // Update invoice status to paid, and align paid/balance columns where available.
+      const updateVariants: Array<Record<string, unknown>> = [
+        {
+          status: 'Paid',
+          paid_amount: invoiceAmount || undefined,
+          balance_due: 0,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          status: 'Paid',
+          paidamount: invoiceAmount || undefined,
+          balancedue: 0,
+          updatedat: new Date().toISOString(),
+        },
+        { status: 'Paid' },
+        { status: 'PAID' },
+      ]
+
+      let updateErrorMessage: string | null = null
+      let updated = false
+
+      for (const payload of updateVariants) {
+        const scopes = [
+          admin
+            .from('invoices')
+            .update(payload)
+            .eq('id', targetInvoiceId)
+            .eq('organization_id', organizationId),
+          admin
+            .from('invoices')
+            .update(payload)
+            .eq('id', targetInvoiceId)
+            .eq('organizationid', organizationId),
+        ]
+
+        for (const query of scopes) {
+          const { error } = await query
+          if (!error) {
+            updated = true
+            break
+          }
+          updateErrorMessage = error.message
+        }
+
+        if (updated) {
+          break
+        }
+      }
+
+      if (!updated && updateErrorMessage) {
+        console.error(`[Invoice Status Update] Failed to update invoice ${invoiceRef} to Paid:`, updateErrorMessage)
       }
     } catch (err) {
       console.error(
@@ -1249,7 +1350,7 @@ function calculateCashEffect(amount: unknown, isIncome: unknown) {
 
         const { data: oldTxn } = await admin
           .from('transactions')
-          .select('amount, is_income, bank_account_id, approval_status, payment_status, status')
+          .select('amount, is_income, bank_account_id, approval_status, payment_status, status, invoice_reference, invoice_id')
           .eq('id', transaction.id)
           .eq('organization_id', organizationId)
           .maybeSingle()
@@ -1292,7 +1393,12 @@ function calculateCashEffect(amount: unknown, isIncome: unknown) {
           return NextResponse.json({ error: `Unable to update transaction status: ${lastError?.message ?? 'Unknown error'}` }, { status: 400 })
         }
 
-        const invoiceId = transaction.invoiceId ?? normalizedTransaction?.invoice_id ?? normalizedTransaction?.invoice_reference
+        const invoiceId =
+          transaction.invoiceId ??
+          normalizedTransaction?.invoice_id ??
+          normalizedTransaction?.invoice_reference ??
+          oldTxn?.invoice_reference ??
+          oldTxn?.invoice_id
         await updateInvoiceStatusIfPaid(admin, organizationId, invoiceId, usedStatusValue)
 
         const oldPosted = isApprovedForCashMovement(

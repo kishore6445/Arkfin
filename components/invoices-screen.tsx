@@ -87,8 +87,25 @@ const getStatusColor = (status: string) => {
 
 const mapInvoiceRow = (row: InvoiceRow): Invoice => {
   const invoiceAmount = row.invoice_amount ?? row.invoiceAmount ?? 0;
-  const paidAmount = row.paid_amount ?? row.paidAmount ?? 0;
-  const balanceDue = row.balance_due ?? row.balanceDue ?? Math.max(0, invoiceAmount - paidAmount);
+  const rawPaidAmount = row.paid_amount ?? row.paidAmount ?? 0;
+  const rawBalanceDue = row.balance_due ?? row.balanceDue ?? Math.max(0, invoiceAmount - rawPaidAmount);
+  const dueDate = row.due_date ?? row.dueDate ?? '';
+  const normalizedStatus = String(row.status ?? '').trim().toUpperCase();
+
+  let computedStatus: Invoice['status'] = 'Unpaid';
+  if (rawBalanceDue <= 0 || normalizedStatus === 'PAID') {
+    computedStatus = 'Paid';
+  } else if (rawPaidAmount > 0 || normalizedStatus === 'PARTIAL' || normalizedStatus === 'PARTIALLY PAID') {
+    computedStatus = 'Partial';
+  } else {
+    const due = dueDate ? new Date(dueDate) : null;
+    if (due && !Number.isNaN(due.getTime()) && due.getTime() < Date.now()) {
+      computedStatus = 'Overdue';
+    }
+  }
+
+  const paidAmount = computedStatus === 'Paid' ? invoiceAmount : rawPaidAmount;
+  const balanceDue = computedStatus === 'Paid' ? 0 : rawBalanceDue;
 
   return {
     id: row.id,
@@ -101,8 +118,8 @@ const mapInvoiceRow = (row: InvoiceRow): Invoice => {
     invoiceAmount,
     paidAmount,
     balanceDue,
-    dueDate: row.due_date ?? row.dueDate ?? '',
-    status: (row.status ?? 'Unpaid') as Invoice['status'],
+    dueDate,
+    status: computedStatus,
   };
 };
 

@@ -123,6 +123,8 @@ type ExtractedInvoiceTaxFields = {
   itcEligible?: boolean;
 };
 
+const MAX_INVOICE_UPLOAD_BYTES = 4 * 1024 * 1024;
+
 type TransactionRow = {
   id: string;
   date?: string | null;
@@ -1304,6 +1306,11 @@ export function FinanceInboxScreen({ onNavigate }: InboxScreenProps) {
       return;
     }
 
+    if (file.size > MAX_INVOICE_UPLOAD_BYTES) {
+      setInvoiceExtractionMessage('File is too large for deployment limits. Please upload a file smaller than 4 MB.');
+      return;
+    }
+
     setIsExtractingInvoiceTax(true);
     setInvoiceExtractionMessage(null);
 
@@ -1325,9 +1332,26 @@ export function FinanceInboxScreen({ onNavigate }: InboxScreenProps) {
         body: formData,
       });
 
-      const result = await response.json();
+      const contentType = response.headers.get('content-type') ?? '';
+      const rawBody = await response.text();
+      const result = contentType.includes('application/json') && rawBody
+        ? JSON.parse(rawBody)
+        : null;
+
       if (!response.ok) {
+        if (response.status === 413) {
+          throw new Error('Uploaded file is too large for deployment limits. Please use a file under 4 MB.');
+        }
+
+        if (!result) {
+          throw new Error(`Invoice extraction failed (${response.status}). Server returned non-JSON response.`);
+        }
+
         throw new Error(result?.error ?? 'Failed to extract invoice fields.');
+      }
+
+      if (!result) {
+        throw new Error('Invoice extraction failed. Server returned non-JSON response.');
       }
 
       const extracted = (result?.extracted ?? {}) as ExtractedInvoiceTaxFields;

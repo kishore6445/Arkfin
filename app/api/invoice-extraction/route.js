@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { PDFParse } from 'pdf-parse'
 
-const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+const MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024
 
 async function extractReadableContent(file) {
   const fileName = file.name.toLowerCase()
@@ -410,7 +410,7 @@ export async function POST(request) {
     }
 
     if (file.size > MAX_FILE_SIZE_BYTES) {
-      return NextResponse.json({ error: 'File is too large. Max 10 MB allowed.' }, { status: 400 })
+      return NextResponse.json({ error: 'File is too large. Max 4 MB allowed in deployment.' }, { status: 400 })
     }
 
     const fileName = file.name.toLowerCase()

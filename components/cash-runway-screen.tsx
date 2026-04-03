@@ -24,15 +24,10 @@ type TransactionApiRow = {
   date: string | null;
   amount: number | null;
   is_income: boolean | null;
+  accounting_type?: string | null;
   source_type?: string | null;
-};
-
-type PayrollRunApiRow = {
-  id: string;
-  payroll_month: string;   // YYYY-MM
-  payroll_date: string;    // YYYY-MM-DD
-  status: string;
-  total_net: number | null;
+  description?: string | null;
+  notes?: string | null;
 };
 
 async function getAccessToken() {
@@ -56,7 +51,6 @@ export function CashRunwayScreen() {
   const [currentCash, setCurrentCash] = useState(0);
   const [bankAccountCount, setBankAccountCount] = useState(0);
   const [transactions, setTransactions] = useState<TransactionApiRow[]>([]);
-  const [payrollRuns, setPayrollRuns] = useState<PayrollRunApiRow[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -134,31 +128,6 @@ export function CashRunwayScreen() {
   useEffect(() => {
     let isMounted = true;
 
-    const fetchPayrollRuns = async () => {
-      try {
-        const accessToken = await getAccessToken();
-        const response = await fetch('/api/payroll-runs', {
-          method: 'GET',
-          cache: 'no-store',
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        if (!response.ok) return;
-        const result = await response.json();
-        if (isMounted) {
-          setPayrollRuns((result.runs ?? []) as PayrollRunApiRow[]);
-        }
-      } catch {
-        if (isMounted) setPayrollRuns([]);
-      }
-    };
-
-    void fetchPayrollRuns();
-    return () => { isMounted = false; };
-  }, [currentOrganization?.id, refreshKey]);
-
-  useEffect(() => {
-    let isMounted = true;
-
     const fetchTransactions = async () => {
       try {
         const accessToken = await getAccessToken();
@@ -202,32 +171,48 @@ export function CashRunwayScreen() {
     return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}`;
   };
 
+  const toBoolean = (value: unknown) => {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') return value.trim().toLowerCase() === 'true';
+    return Boolean(value);
+  };
+
+  const isPayrollTransaction = (t: TransactionApiRow) => {
+    const sourceType = (t.source_type ?? '').trim().toLowerCase();
+    const notes = (t.notes ?? '').toUpperCase();
+    const description = (t.description ?? '').toUpperCase();
+
+    return (
+      sourceType === 'payroll' ||
+      notes.includes('[PAYROLL:') ||
+      description.startsWith('PAYROLL -')
+    );
+  };
+
   const monthlyTotals: Record<string, { inflow: number; outflow: number }> = {};
 
   // Transactions — skip payroll-tagged ones to avoid double-counting with payroll runs
   transactions
-    .filter((t) => (t.source_type ?? '') !== 'payroll')
+    .filter((t) => !isPayrollTransaction(t))
     .forEach((t) => {
       const key = getMonthKey(t.date);
       if (!key) return;
       if (!monthlyTotals[key]) monthlyTotals[key] = { inflow: 0, outflow: 0 };
       const amount = Math.abs(Number(t.amount ?? 0));
-      if (Boolean(t.is_income)) {
+
+      const normalizedAccountingType = String(t.accounting_type ?? '').trim().toUpperCase();
+      const explicitIncome = t.is_income === true;
+      const explicitExpense = t.is_income === false;
+      const inferredIncome = t.is_income == null && normalizedAccountingType === 'REVENUE';
+      const inferredExpense =
+        t.is_income == null &&
+        (normalizedAccountingType === 'EXPENSE' || normalizedAccountingType === 'LIABILITY');
+
+      if (explicitIncome || inferredIncome || toBoolean(t.is_income)) {
         monthlyTotals[key].inflow += amount;
-      } else {
+      } else if (explicitExpense || inferredExpense) {
         monthlyTotals[key].outflow += amount;
       }
-    });
-
-  // Payroll runs — add committed net salary directly as outflows
-  const COMMITTED = new Set(['PROCESSED', 'APPROVED']);
-  payrollRuns
-    .filter((r) => COMMITTED.has((r.status ?? '').toUpperCase()))
-    .forEach((r) => {
-      const key = r.payroll_month?.slice(0, 7) ?? null;
-      if (!key) return;
-      if (!monthlyTotals[key]) monthlyTotals[key] = { inflow: 0, outflow: 0 };
-      monthlyTotals[key].outflow += Math.abs(Number(r.total_net ?? 0));
     });
 
   const displayMonths = 2;

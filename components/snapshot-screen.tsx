@@ -26,6 +26,9 @@ type TransactionApiRow = {
   date?: string | null;
   amount?: number | null;
   is_income?: boolean | null;
+  payment_status?: string | null;
+  approval_status?: string | null;
+  status?: string | null;
   accounting_type?: string | null;
   subtype?: string | null;
   source_type?: string | null;
@@ -136,6 +139,33 @@ export function SnapshotScreen({ onNavigate }: SnapshotScreenProps) {
     };
   }, [refreshKey]);
 
+  const normalizeUpper = (value: unknown) => String(value ?? '').trim().toUpperCase();
+  const toBoolean = (value: unknown) => {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') return value.trim().toLowerCase() === 'true';
+    return Boolean(value);
+  };
+
+  const isPostedCashTransaction = (t: {
+    approvalStatus?: string | null;
+    paymentStatus?: string | null;
+    status?: string | null;
+  }) => {
+    const approval = normalizeUpper(t.approvalStatus);
+    const payment = normalizeUpper(t.paymentStatus);
+    const txnStatus = normalizeUpper(t.status);
+    const hasWorkflowData = Boolean(t.approvalStatus ?? t.paymentStatus ?? t.status);
+    if (!hasWorkflowData) {
+      return true;
+    }
+    const approvalSatisfied =
+      approval === 'APPROVED' ||
+      approval === 'APPROVED_FOR_PAYMENT' ||
+      txnStatus === 'APPROVED';
+    const paymentSatisfied = payment === 'PAID';
+    return approvalSatisfied && paymentSatisfied;
+  };
+
   const effectiveBankAccounts = bankLoaded
     ? liveBankAccounts.map((a) => ({
         id: a.id,
@@ -149,13 +179,18 @@ export function SnapshotScreen({ onNavigate }: SnapshotScreenProps) {
         id: t.id,
         date: t.date ?? '',
         amount: Number(t.amount ?? 0),
-        isIncome: Boolean(t.is_income),
+        isIncome: toBoolean(t.is_income),
+        paymentStatus: t.payment_status ?? null,
+        approvalStatus: t.approval_status ?? null,
+        status: t.status ?? null,
         accountingType: (t.accounting_type ?? 'Expense') as 'Revenue' | 'Expense' | 'Asset' | 'Liability',
         subtype: t.subtype ?? 'Other',
         sourceType: t.source_type ?? null,
       }))
     : state.transactions.map((t) => ({
         ...t,
+        paymentStatus: null as string | null,
+        approvalStatus: null as string | null,
         sourceType: null as string | null,
       }));
 
@@ -167,7 +202,9 @@ export function SnapshotScreen({ onNavigate }: SnapshotScreenProps) {
   const today = new Date().toISOString().split('T')[0];
   const todayDate = new Date();
   const currentMonthKey = today.slice(0, 7);
-  const todayTransactions = effectiveTransactions.filter((t) => t.date === today && t.sourceType !== 'payroll');
+  const todayTransactions = effectiveTransactions.filter(
+    (t) => t.date === today && (t.sourceType ?? '').toLowerCase() !== 'payroll' && isPostedCashTransaction(t)
+  );
   const todayPayrollOutflow = committedPayrollRuns
     .filter((run) => (run.payroll_date ?? '').slice(0, 10) === today)
     .reduce((sum, run) => sum + Number(run.total_net ?? 0), 0);
@@ -180,7 +217,10 @@ export function SnapshotScreen({ onNavigate }: SnapshotScreenProps) {
   const todayNet = todayIncome - todayExpense;
 
   const currentMonthTransactions = effectiveTransactions.filter(
-    (t) => (t.date ?? '').startsWith(currentMonthKey) && t.sourceType !== 'payroll'
+    (t) =>
+      (t.date ?? '').startsWith(currentMonthKey) &&
+      (t.sourceType ?? '').toLowerCase() !== 'payroll' &&
+      isPostedCashTransaction(t)
   );
   const currentMonthPayrollOutflow = committedPayrollRuns
     .filter((run) => (run.payroll_month ?? '').slice(0, 7) === currentMonthKey)
