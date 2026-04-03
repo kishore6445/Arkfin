@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { PDFParse } from 'pdf-parse'
+
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 
 const MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024
 
@@ -10,9 +12,18 @@ async function extractReadableContent(file) {
 
   if (fileName.endsWith('.pdf') || contentType.includes('pdf')) {
     try {
-      const parser = new PDFParse({ data: new Uint8Array(await file.arrayBuffer()) })
+      // Lazy import prevents deployment/runtime crashes when pdf parser bundle differs across environments.
+      const pdfParseModule = await import('pdf-parse')
+      const PDFParseCtor = pdfParseModule?.PDFParse ?? pdfParseModule?.default?.PDFParse ?? pdfParseModule?.default
+      if (!PDFParseCtor) {
+        return { text: '', extractor: 'pdf-parse-missing' }
+      }
+
+      const parser = new PDFParseCtor({ data: new Uint8Array(await file.arrayBuffer()) })
       const parsed = await parser.getText()
-      await parser.destroy()
+      if (typeof parser.destroy === 'function') {
+        await parser.destroy()
+      }
       const text = parsed?.text?.trim() ?? ''
       return { text, extractor: 'pdf-parse' }
     } catch {
@@ -514,4 +525,8 @@ export async function POST(request) {
     const message = error instanceof Error ? error.message : 'Failed to process invoice file'
     return NextResponse.json({ error: message }, { status: 500 })
   }
+}
+
+export async function GET() {
+  return NextResponse.json({ ok: true, route: 'invoice-extraction', runtime: 'nodejs' }, { status: 200 })
 }

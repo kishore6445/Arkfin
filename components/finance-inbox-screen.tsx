@@ -1332,11 +1332,15 @@ export function FinanceInboxScreen({ onNavigate }: InboxScreenProps) {
         body: formData,
       });
 
-      const contentType = response.headers.get('content-type') ?? '';
       const rawBody = await response.text();
-      const result = contentType.includes('application/json') && rawBody
-        ? JSON.parse(rawBody)
-        : null;
+      let result: any = null;
+      if (rawBody) {
+        try {
+          result = JSON.parse(rawBody);
+        } catch {
+          result = null;
+        }
+      }
 
       if (!response.ok) {
         if (response.status === 413) {
@@ -1344,7 +1348,10 @@ export function FinanceInboxScreen({ onNavigate }: InboxScreenProps) {
         }
 
         if (!result) {
-          throw new Error(`Invoice extraction failed (${response.status}). Server returned non-JSON response.`);
+          const snippet = rawBody.replace(/\s+/g, ' ').trim().slice(0, 180);
+          throw new Error(
+            `Invoice extraction failed (${response.status}). Server returned non-JSON response. ${snippet ? `Response starts with: ${snippet}` : ''}`
+          );
         }
 
         throw new Error(result?.error ?? 'Failed to extract invoice fields.');
