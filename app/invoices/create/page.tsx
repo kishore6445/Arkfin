@@ -2,6 +2,6 @@
 
 import { CreateInvoicePage } from '@/components/create-invoice-page';
 
-export default function CreateInvoicePage() {
+export default function CreateInvoiceRoutePage() {
   return <CreateInvoicePage />;
 }
